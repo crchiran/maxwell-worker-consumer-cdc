@@ -1,0 +1,223 @@
+name: Build Worker Image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "worker/**"
+      - ".github/workflows/worker-build.yaml"
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "worker/**"
+      - ".github/workflows/worker-build.yaml"
+
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/maxwell-worker-consumer-cdc
+  GO_VERSION: "1.24.3"
+  GITOPS_REPO: crchiran/maxwell-cdc-gitops
+  GITOPS_IMAGE_FILE: clusters/prod/kustomization.yaml
+
+concurrency:
+  group: worker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test Go Worker
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: worker/go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify modules
+        run: |
+          go mod verify
+          go list ./...
+
+      - name: Verify go.mod/go.sum
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Check formatting
+        run: |
+          files="$(gofmt -l .)"
+
+          if [ -n "$files" ]; then
+            echo "The following files need formatting:"
+            echo "$files"
+            echo
+            echo "Run:"
+            echo "gofmt -w ."
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Compile check
+        run: go test -run=^$ ./...
+
+      - name: Run tests
+        run: go test -race -v ./...
+
+      - name: Build binary
+        run: |
+          CGO_ENABLED=0 \
+          GOOS=linux \
+          GOARCH=amd64 \
+          go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o worker-app .
+
+      - name: Build summary
+        run: |
+          echo "## Go Worker Status" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Dependency download: passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Module verification: passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- go.mod/go.sum validation: passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Formatting check: passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- go vet: passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Compile check: passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tests (-race): passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Binary build: passed" >> "$GITHUB_STEP_SUMMARY"
+
+  docker:
+    name: Build and Push GHCR Image
+    needs: test
+    runs-on: ubuntu-latest
+
+    if: github.event_name != 'pull_request'
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image_tag: ${{ steps.vars.outputs.sha }}
+      image: ${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate image tag
+        id: vars
+        run: |
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.vars.outputs.sha }}
+            type=raw,value=prod
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./worker
+          file: ./worker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Publish summary
+        run: |
+          echo "## Container Image Status" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Docker image build: passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Push to GHCR: passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  update-gitops:
+    name: Update GitOps Repo
+    needs: docker
+    runs-on: ubuntu-latest
+
+    if: github.event_name != 'pull_request'
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: maxwell-cdc-gitops
+
+      - name: Update PROD image tag
+        working-directory: maxwell-cdc-gitops
+        run: |
+          TAG="${{ needs.docker.outputs.image_tag }}"
+          FILE="${{ env.GITOPS_IMAGE_FILE }}"
+
+          echo "Updating PROD image tag to: ${TAG}"
+          echo "Target file: ${FILE}"
+
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: $FILE not found"
+            exit 1
+          fi
+
+          sed -i "s|newTag: .*|newTag: ${TAG}|g" "$FILE"
+
+          echo "Changes:"
+          git diff
+
+      - name: Commit and push GitOps update
+        working-directory: maxwell-cdc-gitops
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          if git diff --quiet; then
+            echo "No GitOps image update needed."
+            exit 0
+          fi
+
+          git add "${{ env.GITOPS_IMAGE_FILE }}"
+          git commit -m "Update maxwell worker image to ${{ needs.docker.outputs.image_tag }}"
+          git push
+
+      - name: GitOps summary
+        run: |
+          echo "## GitOps Status" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GitOps repo: \`${{ env.GITOPS_REPO }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Updated image: \`${{ needs.docker.outputs.image }}\`" >> "$GITHUB_STEP_SUMMARY"
