@@ -36,17 +36,17 @@ type Config struct {
 	RedisGroup     string
 	RedisConsumer  string
 	FailedStream   string
-	MySQLDSN        string
+	MySQLDSN       string
 	TargetDatabase string
-	MaxRetries      int
-	BlockSeconds    int
-	PendingIdleMS   int64
-	BatchCount      int64
-	StopOnCritical  bool
-	PrimaryKeyMap   map[string]string
-	AllowedDBs      map[string]bool
-	AllowedTables   map[string]bool
-	HealthAddr      string
+	MaxRetries     int
+	BlockSeconds   int
+	PendingIdleMS  int64
+	BatchCount     int64
+	StopOnCritical bool
+	PrimaryKeyMap  map[string]string
+	AllowedDBs     map[string]bool
+	AllowedTables  map[string]bool
+	HealthAddr     string
 }
 
 var ready atomic.Bool
@@ -125,17 +125,17 @@ func loadConfig() Config {
 		RedisGroup:     getenv("REDIS_GROUP", "taskmanagement-read-sync"),
 		RedisConsumer:  getenv("REDIS_CONSUMER", "consumer-1"),
 		FailedStream:   getenv("FAILED_STREAM", "maxwell:cdc:failed"),
-		MySQLDSN:        dsn,
+		MySQLDSN:       dsn,
 		TargetDatabase: targetDB,
-		MaxRetries:      atoi(getenv("MAX_RETRIES", "5")),
-		BlockSeconds:    atoi(getenv("BLOCK_SECONDS", "5")),
-		PendingIdleMS:   int64(atoi(getenv("PENDING_IDLE_MS", "60000"))),
-		BatchCount:      int64(atoi(getenv("BATCH_COUNT", "10"))),
-		StopOnCritical:  strings.EqualFold(getenv("STOP_ON_CRITICAL", "true"), "true"),
-		PrimaryKeyMap:   parseMap(getenv("PRIMARY_KEY_MAP", "users:id")),
-		AllowedDBs:      parseSet(getenv("ALLOWED_DATABASES", "")),
-		AllowedTables:   parseSet(getenv("ALLOWED_TABLES", "")),
-		HealthAddr:      getenv("HEALTH_ADDR", ":8080"),
+		MaxRetries:     atoi(getenv("MAX_RETRIES", "5")),
+		BlockSeconds:   atoi(getenv("BLOCK_SECONDS", "5")),
+		PendingIdleMS:  int64(atoi(getenv("PENDING_IDLE_MS", "60000"))),
+		BatchCount:     int64(atoi(getenv("BATCH_COUNT", "10"))),
+		StopOnCritical: strings.EqualFold(getenv("STOP_ON_CRITICAL", "true"), "true"),
+		PrimaryKeyMap:  parseMap(getenv("PRIMARY_KEY_MAP", "users:id")),
+		AllowedDBs:     parseSet(getenv("ALLOWED_DATABASES", "")),
+		AllowedTables:  parseSet(getenv("ALLOWED_TABLES", "")),
+		HealthAddr:     getenv("HEALTH_ADDR", ":8080"),
 	}
 }
 
